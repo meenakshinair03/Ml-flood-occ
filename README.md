@@ -164,6 +164,5 @@ The best model is selected automatically based on F1-score, then retrained on th
 - `requriements.txt` is misspelled and contains a stray `pip install -r requirements.txt` line inside the file itself — clean this up before publishing (see Installation section above).
 - `main.py` creates a `dataset/` directory that isn't actually used (data is saved to `data/` by `data_preprossesing.py`).
 
-## License
 
-Add your preferred license here (e.g., MIT).
+ 
