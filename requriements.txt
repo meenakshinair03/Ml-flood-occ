@@ -1,7 +1,7 @@
-streamlit>=1.30
+streamlit
 numpy
 pandas
 joblib
-scikit-learn==<the version you trained with>
+scikit-learn
 
 
