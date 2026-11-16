@@ -1,7 +1,7 @@
-pandas
+streamlit>=1.30
 numpy
-matplotlib
-seaborn
+pandas
+joblib
 scikit-learn
 pip install -r requirements.txt
 
