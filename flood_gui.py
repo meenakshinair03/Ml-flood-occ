@@ -1,12 +1,4 @@
 
-Streamlit version of the Flood Risk Prediction System (India).
-
-Run locally:
-    streamlit run flood_app.py
-
-Deploy (Streamlit Community Cloud): set the main file to flood_app.py and keep
-models/flood_model.pkl and models/label_encoders.pkl in the repo.
-"""
 
 import math
 from pathlib import Path
