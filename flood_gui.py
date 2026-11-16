@@ -1,13 +1,4 @@
-# flood_gui_with_risk_levels.py
-# Enhanced GUI with High/Medium/Low risk levels
 
-import tkinter as tk
-from tkinter import messagebox, ttk
-import numpy as np
-import joblib
-import os"""
-flood_app.py
-------------
 Streamlit version of the Flood Risk Prediction System (India).
 
 Run locally:
