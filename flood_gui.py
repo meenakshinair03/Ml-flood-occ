@@ -5,7 +5,346 @@ import tkinter as tk
 from tkinter import messagebox, ttk
 import numpy as np
 import joblib
-import os
+import os"""
+flood_app.py
+------------
+Streamlit version of the Flood Risk Prediction System (India).
+
+Run locally:
+    streamlit run flood_app.py
+
+Deploy (Streamlit Community Cloud): set the main file to flood_app.py and keep
+models/flood_model.pkl and models/label_encoders.pkl in the repo.
+"""
+
+import math
+from pathlib import Path
+
+import joblib
+import numpy as np
+import pandas as pd
+import streamlit as st
+
+st.set_page_config(page_title="Flood Risk Assessment · India", page_icon="🌊", layout="wide")
+
+# ----------------------------------------------------------------------
+# Constants
+# ----------------------------------------------------------------------
+BASE = Path(__file__).resolve().parent
+MODEL_DIRS = [BASE / "models", BASE.parent / "models", Path("models")]
+
+INK = "#0f2a43"
+RISK = {
+    "LOW": {"color": "#2e9e6b", "label": "Low risk", "range": "below 34%"},
+    "MEDIUM": {"color": "#e0a21b", "label": "Medium risk", "range": "34% to 66%"},
+    "HIGH": {"color": "#d9453b", "label": "High risk", "range": "67% and above"},
+}
+
+ADVICE = {
+    "LOW": (
+        "The area looks relatively safe from flooding right now.",
+        [
+            "Carry on with normal activities",
+            "Keep an eye on weather forecasts",
+            "Keep basic emergency supplies at home",
+            "Stay subscribed to local alerts",
+        ],
+    ),
+    "MEDIUM": (
+        "There is a moderate chance of flooding. Stay cautious.",
+        [
+            "Watch weather and water-level updates",
+            "Prepare emergency supplies",
+            "Identify your evacuation routes",
+            "Keep important documents somewhere safe",
+            "Avoid low-lying areas where possible",
+            "Follow local authority announcements",
+        ],
+    ),
+    "HIGH": (
+        "A significant flood threat is indicated. Act now.",
+        [
+            "Alert local authorities immediately",
+            "Prepare for possible evacuation",
+            "Move to higher ground",
+            "Secure property and valuables",
+            "Keep an emergency kit ready",
+            "Monitor water levels closely",
+            "Follow official evacuation orders",
+            "Stay away from flood-prone areas",
+        ],
+    ),
+}
+
+# Defaults and one-click presets (same sample values as the desktop app)
+DEFAULTS = {
+    "lat": 20.52, "lon": 70.92, "rain": 179.72, "temp": 34.84, "hum": 63.63,
+    "discharge": 3038.20, "level": 6.97, "elev": 5106.69, "pop": 1427.95,
+    "land": "Agricultural", "soil": "Peat", "infra": False, "hist": False,
+}
+PRESETS = {
+    "High risk": {
+        "lat": 25.36, "lon": 85.61, "rain": 198.98, "temp": 32.63, "hum": 74.45,
+        "discharge": 5589.20, "level": 13.18, "elev": 2512.27, "pop": 6163.06,
+        "land": "Desert", "soil": "Sandy", "infra": True, "hist": True,
+    },
+    "Medium risk": DEFAULTS,
+    "Low risk": {
+        "lat": 25.43, "lon": 90.12, "rain": 212.87, "temp": 35.60, "hum": 60.76,
+        "discharge": 1867.75, "level": 2.02, "elev": 7287.01, "pop": 6782.94,
+        "land": "Forest", "soil": "Silt", "infra": False, "hist": False,
+    },
+}
+
+# ----------------------------------------------------------------------
+# Styling
+# ----------------------------------------------------------------------
+st.markdown(
+    f"""
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:wght@600;700&family=IBM+Plex+Sans:wght@400;500;600&display=swap');
+html, body, [class*="css"], .stMarkdown, label, input {{ font-family: 'IBM Plex Sans', sans-serif; }}
+h1, h2, h3, .hero-title {{ font-family: 'Bricolage Grotesque', sans-serif !important; letter-spacing: -0.01em; }}
+.block-container {{ padding-top: 2rem; max-width: 1200px; }}
+
+.hero {{ background: {INK}; border-radius: 16px; padding: 28px 32px; margin-bottom: 24px; color: #eaf3fa; }}
+.hero-title {{ font-size: 2.1rem; font-weight: 700; margin: 0; color: #ffffff; }}
+.hero p {{ margin: 6px 0 0 0; color: #a9c4da; font-size: 1.02rem; max-width: 62ch; }}
+
+.group-title {{ font-family: 'Bricolage Grotesque', sans-serif; font-weight: 600; font-size: 1.05rem; margin: 0 0 2px 0; }}
+.group-note {{ color: #7b8b99; font-size: 0.85rem; margin: 0 0 10px 0; }}
+
+.result {{ background: {INK}; border-radius: 16px; padding: 22px 24px 20px 24px; color: #eaf3fa; border-top: 6px solid var(--risk); }}
+.result .verdict {{ font-family: 'Bricolage Grotesque', sans-serif; font-size: 1.7rem; font-weight: 700; color: var(--risk); margin: 0; }}
+.result .summary {{ color: #c6d9e8; margin: 4px 0 8px 0; }}
+.result svg {{ width: 100%; height: auto; display: block; margin: 0 auto; }}
+.result .split {{ display: flex; gap: 12px; margin: 4px 0 14px 0; }}
+.result .split div {{ flex: 1; background: rgba(255,255,255,.07); border-radius: 10px; padding: 10px 12px; }}
+.result .split b {{ display: block; font-size: 1.25rem; }}
+.result .split span {{ font-size: 0.8rem; color: #9fb8cc; }}
+.result h4 {{ margin: 0 0 6px 0; font-size: 0.95rem; color: #ffffff; }}
+.result ul {{ margin: 0; padding-left: 1.1rem; color: #d6e5f1; }}
+.result li {{ margin-bottom: 3px; }}
+.legend {{ display: flex; gap: 16px; flex-wrap: wrap; font-size: 0.85rem; color: #7b8b99; margin-top: 12px; }}
+.legend i {{ display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 6px; }}
+</style>
+""",
+    unsafe_allow_html=True,
+)
+
+
+# ----------------------------------------------------------------------
+# Model loading
+# ----------------------------------------------------------------------
+@st.cache_resource(show_spinner="Loading model…")
+def load_artifacts():
+    for d in MODEL_DIRS:
+        m, e = d / "flood_model.pkl", d / "label_encoders.pkl"
+        if m.exists() and e.exists():
+            return joblib.load(m), joblib.load(e)
+    return None, None
+
+
+model, encoders = load_artifacts()
+if model is None:
+    st.error(
+        "Model files not found. Train the model first (run `main.py`) and make sure "
+        "`models/flood_model.pkl` and `models/label_encoders.pkl` are in the repository."
+    )
+    st.stop()
+
+
+def options_for(encoder_name, fallback):
+    enc = encoders.get(encoder_name) if hasattr(encoders, "get") else None
+    return [str(c) for c in enc.classes_] if enc is not None else fallback
+
+
+LAND_OPTIONS = options_for("Land Cover", ["Agricultural", "Forest", "Urban", "Water Bodies", "Desert"])
+SOIL_OPTIONS = options_for("Soil Type", ["Clay", "Loam", "Sandy", "Silt", "Peat"])
+
+
+# ----------------------------------------------------------------------
+# Helpers
+# ----------------------------------------------------------------------
+def get_risk_level(p):
+    if p < 0.34:
+        return "LOW"
+    if p < 0.67:
+        return "MEDIUM"
+    return "HIGH"
+
+
+def gauge_svg(p, level):
+    cx, cy, r = 150, 150, 120
+
+    def pt(frac, radius=r):
+        a = math.pi * (1 - frac)
+        return cx + radius * math.cos(a), cy - radius * math.sin(a)
+
+    def arc(f0, f1, color, opacity):
+        x0, y0 = pt(f0)
+        x1, y1 = pt(f1)
+        return (f'<path d="M {x0:.1f} {y0:.1f} A {r} {r} 0 0 1 {x1:.1f} {y1:.1f}" '
+                f'stroke="{color}" stroke-width="20" fill="none" opacity="{opacity}"/>')
+
+    bands = [(0.0, 0.34, "LOW"), (0.34, 0.67, "MEDIUM"), (0.67, 1.0, "HIGH")]
+    arcs = "".join(arc(a, b, RISK[n]["color"], 1 if n == level else 0.28) for a, b, n in bands)
+    nx, ny = pt(p, r - 34)
+    return (
+        '<svg viewBox="0 0 300 200" role="img" aria-label="Flood probability gauge">'
+        f"{arcs}"
+        f'<line x1="{cx}" y1="{cy}" x2="{nx:.1f}" y2="{ny:.1f}" stroke="#ffffff" stroke-width="4" stroke-linecap="round"/>'
+        f'<circle cx="{cx}" cy="{cy}" r="8" fill="#ffffff"/>'
+        f'<text x="{cx}" y="190" text-anchor="middle" font-size="34" font-weight="700" fill="#ffffff">{p*100:.1f}%</text>'
+        '<text x="30" y="172" text-anchor="middle" font-size="11" fill="#9fb8cc">0%</text>'
+        '<text x="270" y="172" text-anchor="middle" font-size="11" fill="#9fb8cc">100%</text>'
+        "</svg>"
+    )
+
+
+def apply_preset(name):
+    for k, v in PRESETS[name].items():
+        if k == "land" and v not in LAND_OPTIONS:
+            v = LAND_OPTIONS[0]
+        if k == "soil" and v not in SOIL_OPTIONS:
+            v = SOIL_OPTIONS[0]
+        st.session_state[k] = v
+
+
+for k, v in DEFAULTS.items():
+    st.session_state.setdefault(k, v)
+if st.session_state["land"] not in LAND_OPTIONS:
+    st.session_state["land"] = LAND_OPTIONS[0]
+if st.session_state["soil"] not in SOIL_OPTIONS:
+    st.session_state["soil"] = SOIL_OPTIONS[0]
+
+
+# ----------------------------------------------------------------------
+# Header
+# ----------------------------------------------------------------------
+st.markdown(
+    """
+<div class="hero">
+  <p class="hero-title">Flood risk assessment</p>
+  <p>Enter rainfall, river, terrain and community readings for a location in India
+  to estimate how likely a flood is. The result updates as you change the inputs.</p>
+</div>
+""",
+    unsafe_allow_html=True,
+)
+
+# ----------------------------------------------------------------------
+# Layout: inputs (left) / result (right)
+# ----------------------------------------------------------------------
+left, right = st.columns([3, 2], gap="large")
+
+with left:
+    st.caption("Start from an example, then adjust the values.")
+    b1, b2, b3, b4 = st.columns(4)
+    b1.button("High risk example", on_click=apply_preset, args=("High risk",), use_container_width=True)
+    b2.button("Medium risk example", on_click=apply_preset, args=("Medium risk",), use_container_width=True)
+    b3.button("Low risk example", on_click=apply_preset, args=("Low risk",), use_container_width=True)
+    b4.button("Reset", on_click=apply_preset, args=("Medium risk",), use_container_width=True)
+
+    with st.container(border=True):
+        st.markdown('<p class="group-title">Location</p><p class="group-note">Decimal degrees</p>',
+                    unsafe_allow_html=True)
+        c1, c2 = st.columns(2)
+        lat = c1.number_input("Latitude", -90.0, 90.0, step=0.01, format="%.2f", key="lat")
+        lon = c2.number_input("Longitude", -180.0, 180.0, step=0.01, format="%.2f", key="lon")
+        if not (6.0 <= lat <= 38.0 and 68.0 <= lon <= 98.0):
+            st.warning("These coordinates look outside India. The model was built for Indian conditions, "
+                       "so the estimate may be unreliable.")
+
+    with st.container(border=True):
+        st.markdown('<p class="group-title">Weather</p>', unsafe_allow_html=True)
+        c1, c2, c3 = st.columns(3)
+        rain = c1.number_input("Rainfall (mm)", 0.0, 500.0, step=1.0, key="rain")
+        temp = c2.number_input("Temperature (°C)", -10.0, 50.0, step=0.1, key="temp")
+        hum = c3.number_input("Humidity (%)", 0.0, 100.0, step=0.5, key="hum")
+
+    with st.container(border=True):
+        st.markdown('<p class="group-title">Water</p>', unsafe_allow_html=True)
+        c1, c2 = st.columns(2)
+        discharge = c1.number_input("River discharge (m³/s)", 0.0, 10000.0, step=10.0, key="discharge")
+        level = c2.number_input("Water level (m)", 0.0, 50.0, step=0.1, key="level")
+
+    with st.container(border=True):
+        st.markdown('<p class="group-title">Terrain and land</p>', unsafe_allow_html=True)
+        c1, c2, c3 = st.columns(3)
+        elev = c1.number_input("Elevation (m)", 0.0, 9000.0, step=10.0, key="elev")
+        land = c2.selectbox("Land cover", LAND_OPTIONS, key="land")
+        soil = c3.selectbox("Soil type", SOIL_OPTIONS, key="soil")
+
+    with st.container(border=True):
+        st.markdown('<p class="group-title">Community</p>', unsafe_allow_html=True)
+        c1, c2, c3 = st.columns(3)
+        pop = c1.number_input("Population density", 0.0, 10000.0, step=10.0, key="pop")
+        infra = c2.toggle("Infrastructure present", key="infra")
+        hist = c3.toggle("Past floods recorded", key="hist")
+
+# ----------------------------------------------------------------------
+# Prediction (feature order matches the training pipeline / original app)
+# ----------------------------------------------------------------------
+try:
+    land_enc = encoders["Land Cover"].transform([land])[0]
+    soil_enc = encoders["Soil Type"].transform([soil])[0]
+    features = np.array(
+        [[lat, lon, rain, temp, hum, discharge, level, elev,
+          land_enc, soil_enc, pop, int(infra), int(hist)]],
+        dtype=float,
+    )
+    proba = model.predict_proba(features)[0]
+    flood_p, safe_p = float(proba[1]), float(proba[0])
+    error = None
+except Exception as e:  # noqa: BLE001
+    error = str(e)
+
+with right:
+    if error:
+        st.error(f"Could not make a prediction: {error}")
+    else:
+        level_name = get_risk_level(flood_p)
+        info = RISK[level_name]
+        summary, tips = ADVICE[level_name]
+        tips_html = "".join(f"<li>{t}</li>" for t in tips)
+        st.markdown(
+            f'<div class="result" style="--risk:{info["color"]}">'
+            f'<p class="verdict">{info["label"]}</p>'
+            f'<p class="summary">{summary}</p>'
+            f"{gauge_svg(flood_p, level_name)}"
+            f'<div class="split">'
+            f"<div><b>{flood_p*100:.1f}%</b><span>Flood probability</span></div>"
+            f"<div><b>{safe_p*100:.1f}%</b><span>No-flood probability</span></div>"
+            f"</div>"
+            f"<h4>What to do</h4><ul>{tips_html}</ul>"
+            f"</div>",
+            unsafe_allow_html=True,
+        )
+        st.markdown(
+            '<div class="legend">'
+            f'<span><i style="background:{RISK["LOW"]["color"]}"></i>Low: {RISK["LOW"]["range"]}</span>'
+            f'<span><i style="background:{RISK["MEDIUM"]["color"]}"></i>Medium: {RISK["MEDIUM"]["range"]}</span>'
+            f'<span><i style="background:{RISK["HIGH"]["color"]}"></i>High: {RISK["HIGH"]["range"]}</span>'
+            "</div>",
+            unsafe_allow_html=True,
+        )
+        with st.expander("Values used for this estimate"):
+            st.dataframe(
+                pd.DataFrame(
+                    {
+                        "Input": ["Latitude", "Longitude", "Rainfall (mm)", "Temperature (°C)", "Humidity (%)",
+                                  "River discharge (m³/s)", "Water level (m)", "Elevation (m)", "Land cover",
+                                  "Soil type", "Population density", "Infrastructure", "Historical floods"],
+                        "Value": [lat, lon, rain, temp, hum, discharge, level, elev, land, soil, pop,
+                                  "Yes" if infra else "No", "Yes" if hist else "No"],
+                    }
+                ).astype(str),
+                hide_index=True,
+                use_container_width=True,
+            )
+        st.caption("This is a model estimate, not an official warning. For real events, follow "
+                   "alerts from IMD, CWC and your state disaster management authority.")
 
 # Load the trained model and encoders
 try:
